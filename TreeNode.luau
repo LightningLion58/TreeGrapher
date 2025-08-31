@@ -10,7 +10,9 @@ type self<T> = {
 	_children: { TreeNode<T> },
 	_childrenCount: number,
 }
-
+--[[
+Represents in a node in a generic Tree data structure.
+]]
 export type TreeNode<T> = typeof(setmetatable({} :: self<T>, TreeNode))
 
 local Queue = require("@self/Queue")
@@ -53,12 +55,34 @@ function TreeNode.GetData<T>(self: TreeNode<T>): T
 	return self._data
 end
 --[[
+Sets <em>this</em> node's data to <strong>data</strong>.
+]]
+function TreeNode.SetData<T>(self: TreeNode<T>, data: T)
+	self._data = data
+end
+--[[
 Returns the parent node of this node.
 If this node is the root, this will return nil.
 ]]
 function TreeNode.GetParent<T>(self: TreeNode<T>): TreeNode<T>?
 	return self._parent
 end
+--[[
+Sets the <strong>parent</strong> of this node to <strong>parent</strong>.
+]]
+function TreeNode.SetParent<T>(self: TreeNode<T>, parent: TreeNode<T>)
+	local oldParent = self._parent
+
+	if oldParent then
+		oldParent:RemoveChild(self)
+	end
+	if parent then
+		parent:AddChild(self)
+	else
+		self._parent = nil
+	end
+end
+
 --[[
 Returns true if this node is the root of the tree, false otherwise.
 ]]
@@ -73,21 +97,6 @@ function TreeNode.IsLeaf<T>(self: TreeNode<T>): boolean
 	return self._childrenCount == 0
 end
 --[[
-Sets the <strong>parent</strong> of this node.
-]]
-function TreeNode.SetParent<T>(self: TreeNode<T>, parent: TreeNode<T>)
-	local oldParent = self._parent
-
-	if oldParent then
-		oldParent:RemoveChild(self)
-	end
-	if parent then
-		parent:AddChild(self)
-	else
-		self._parent = nil
-	end
-end
---[[
 Adds the <strong>child</strong> TreeNode to this node.
 ]]
 function TreeNode.AddChild<T>(self: TreeNode<T>, child: TreeNode<T>)
@@ -96,36 +105,6 @@ function TreeNode.AddChild<T>(self: TreeNode<T>, child: TreeNode<T>)
 	self._childrenIndexes[child] = self._childrenCount
 	child._parent = self
 end
-
---[[
-Returns the number of children of the tree node.
-]]
-function TreeNode.GetChildrenCount<T>(self: TreeNode<T>): number
-	return self._childrenCount
-end
-
---[[
-Adds a list of TreeNode  <strong>children</strong> to this node.
-]]
-function TreeNode.AddChildren<T>(self: TreeNode<T>, children: { TreeNode<T> })
-	for _, child in children do
-		self:AddChild(child)
-	end
-end
-
---[[
-Returns a table of the children of this node.
-]]
-function TreeNode.GetChildren<T>(self: TreeNode<T>): { TreeNode<T> }
-	return table.clone(self._children)
-end
---[[
-Returns whether <strong>someNode</strong> is a child of this node
-]]
-function TreeNode.HasChild<T>(self: TreeNode<T>, someNode: TreeNode<T>)
-	return self._childrenIndexes[someNode] ~= nil
-end
-
 --[[
 Removes <strong>someNode</strong> from this TreeNode's children (if exists) and returns it
 
@@ -162,6 +141,34 @@ function TreeNode.RemoveChild<T>(self: TreeNode<T>, someNode: TreeNode<T> | numb
 	end
 
 	return nil
+end
+--[[
+Returns the number of children of the tree node.
+]]
+function TreeNode.GetChildrenCount<T>(self: TreeNode<T>): number
+	return self._childrenCount
+end
+
+--[[
+Adds a list of TreeNode  <strong>children</strong> to this node.
+]]
+function TreeNode.AddChildren<T>(self: TreeNode<T>, children: { TreeNode<T> })
+	for _, child in children do
+		self:AddChild(child)
+	end
+end
+
+--[[
+Returns a table of the children of this node.
+]]
+function TreeNode.GetChildren<T>(self: TreeNode<T>): { TreeNode<T> }
+	return table.clone(self._children)
+end
+--[[
+Returns whether <strong>someNode</strong> is a child of this node
+]]
+function TreeNode.HasChild<T>(self: TreeNode<T>, someNode: TreeNode<T>)
+	return self._childrenIndexes[someNode] ~= nil
 end
 
 function preOrder<T>(treeNode: TreeNode<T>, action: (TreeNode<T>) -> any)

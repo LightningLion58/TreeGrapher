@@ -4,6 +4,8 @@ local TreeNodeClass = require("./TreeNode")
 local TreeGrapher = {}
 TreeGrapher.__index = TreeGrapher
 
+local DEFAULT_MARGIN = 0.4
+local DEFAULT_ALIGNMENT = "Center"
 export type GuiTreeData<T> = {
 	_guiObject : GuiObject;
 	_height : number;
@@ -14,25 +16,29 @@ export type GuiTreeData<T> = {
 }
 
 --[[
-Settings for the lines connecting the nodes:
+Settings for the edges (lines connecting the nodes):
 Thickness - thickness of the lines (in pixels).
 Color - Color3 of the lines.
 ParallelToAxes - if false, the connecting lines will be diagonal.
 Otherwise, the lines will be parallel to the X and Y axes.
 ]]
-export type LineSettings = {
+export type EdgeSettings = {
 	Thickness : number;
+	Transparency : number;
 	Color : Color3;
 	ParallelToAxes : boolean;
 }
 
+type AlignmentType = "Left" | "Center" | "Right" | nil
 type self<T> = {
 	_tree : TreeNodeClass.TreeNode<T>;
 	_guiTree : TreeNodeClass.TreeNode<GuiTreeData<T>>?;
 	_canvas : GuiObject?;
 	_linesFrame : CanvasGroup?;
-	_displayFunction : (T) -> GuiObject;
-	_lineSettings : LineSettings;
+	_displayFunction : (T, TreeNodeClass.TreeNode<T>) -> GuiObject;
+	_edgeSettings : EdgeSettings;
+	_alignment : "Left" | "Center" | "Right";
+	_verticalMargin : number;
 }
 
 --[[
@@ -75,17 +81,18 @@ Creates a new TreeGrapher instance given: <br>
 <strong>tree</strong> - The tree to be graphed.<br>
 <strong>displayFunction</strong> - Function that creates a widget for a TreeNode,<br>
  and returns the GUI Widget of the node. The parameters sent to the function are the data of the node and it's parent (if exists)<br>
-<strong>lineSettings</strong> - Dictionary with settings for the lines connecting the nodes.<br>
+<strong>edgeSettings</strong> - Dictionary with settings for the lines connecting the nodes.<br>
 ]]
 function TreeGrapher.new<T>(tree : TreeNodeClass.TreeNode<T>, 
-	displayFunction : (T, T?) -> GuiObject , lineSettings : LineSettings) : TreeGrapher<T>
+	displayFunction : (T, TreeNodeClass.TreeNode<T>) -> GuiObject , edgeSettings : EdgeSettings) : TreeGrapher<T>
 	local self = setmetatable(
 		{
 			_tree = tree;
 			_displayFunction = displayFunction;
 			_canvas = nil;
-			_lineSettings = lineSettings;
+			_edgeSettings = table.clone(edgeSettings);
 			_linesFrame = nil;
+			_verticalMargin = DEFAULT_MARGIN
 		}, 
 		TreeGrapher
 	)
@@ -106,8 +113,10 @@ function TreeGrapher.Mount<T>(self : TreeGrapher<T>, parent : GuiObject)
 	linesFrame.BackgroundTransparency = 1
 	linesFrame.Size = UDim2.fromScale(1,1)
 	linesFrame.Name = "GraphEdges"
+	linesFrame.GroupTransparency = self._edgeSettings.Transparency
+	linesFrame.AnchorPoint = Vector2.new(0.5,0.5)
+	linesFrame.Position = UDim2.fromScale(0.5,0.5)
 	linesFrame.Parent = parent
-
 	self._linesFrame = linesFrame
 end
 --[[
@@ -126,19 +135,23 @@ local function createContainer(size : UDim2, position : UDim2, parentContainer :
 end
 --[[
 Creates a <em>Path2D</em> connecting <strong>pos1</strong> and <strong>pos2</strong>,
- according to <strong>lineSettings</strong>, 
+ according to <strong>edgeSettings</strong>, 
  and sets the name to <strong>name</strong> under the parent CanvasGroup <strong>parentContainer</strong><br>
  <br/>
 Returns the Path2D.
 ]]
 local function connectWithPath(
-	pos1 : Path2DControlPoint, pos2  : Path2DControlPoint, lineSettings : LineSettings, name : string,
-	parentContainer : CanvasGroup?)
-
+	pos1 : Path2DControlPoint, pos2  : Path2DControlPoint, 
+	edgeSettings : EdgeSettings, name : string, parentContainer : CanvasGroup?)
+	
+	if(not parentContainer) then
+		error("TreeGrapher: No parent for Path2D lines.")
+	end
+	
 	local line = Instance.new("Path2D")
 	line.Name = name
 
-	if(lineSettings.ParallelToAxes) then
+	if(edgeSettings.ParallelToAxes) then
 		local midPos = UDim2.fromScale(
 			(pos1.Position.X.Scale + pos2.Position.X.Scale)/2,
 			(pos1.Position.Y.Scale + pos2.Position.Y.Scale)/2
@@ -151,11 +164,28 @@ local function connectWithPath(
 		line:SetControlPoints({pos1,pos2})
 	end
 
-	line.Thickness = lineSettings.Thickness
-	line.Color3 = lineSettings.Color
+	line.Thickness = edgeSettings.Thickness
+	line.Color3 = edgeSettings.Color
 	line.Visible = true
 
 	line.Parent = parentContainer
+	--Force the line to re-render. This is to make sure the line is rendered correctly.
+	--This is a bit of a hack, but it works.
+	local function reRender()
+		line.Visible = false
+		line.Visible = true
+	end
+	local lastChanged = 0
+	parentContainer:GetPropertyChangedSignal("AbsolutePosition"):Connect(function()
+		if(tick() - lastChanged < 0.4) then
+			return
+		end
+		lastChanged = tick()
+		reRender()
+		task.wait(0.4)
+		reRender()
+	end)
+	
 	return line
 end
 
@@ -167,8 +197,9 @@ Creates a new GUI widget for <strong>treeNode</strong> using <strong>displayFunc
 <strong>parentContainer</strong> - The canvas where the tree is supposed to be drawn.
 ]]
 local function createTreeNodeGui<T>(
-	treeNode : TreeNodeClass.TreeNode<GuiTreeData<T>>, displayFunction : (T, T?) -> GuiObject, 
-	nodeHeight : number, treeHeight : number, treeHeightWithMargin : number, parentContainer : GuiObject)
+	treeNode : TreeNodeClass.TreeNode<GuiTreeData<T>>, displayFunction : (T, TreeNodeClass.TreeNode<T>) -> GuiObject, 
+	nodeHeight : number, treeHeight : number, treeHeightWithMargin : number,
+	alignment : AlignmentType, parentContainer : GuiObject)
 
 	local posX = 0
 	local posY = 0
@@ -195,9 +226,9 @@ local function createTreeNodeGui<T>(
 		UDim2.fromScale(posX, posY), 
 		parentContainer
 	)
-
+	local guiData = treeNode:GetData()
 	local success, name = pcall(function()
-		local data = treeNode:GetData()._data:GetData()
+		local data = guiData._data:GetData()
 		if(typeof(data) == "string") then
 			return data
 		end
@@ -206,9 +237,10 @@ local function createTreeNodeGui<T>(
 	local isEmpty = treeNode:GetData()._isEmpty
 	container.Name = success and name or tostring(isEmpty and "EmptySpace" or treeNode:GetData()._data:GetData())
 	if(not isEmpty) then
-		local widget = displayFunction(treeNode:GetData()._data:GetData(), treeNode:IsRoot() and treeNode:GetData()._data:GetData() or nil)
-		widget.AnchorPoint = Vector2.new(0.5,0.5)
-		widget.Position = UDim2.fromScale(0.5,0.5)
+		local widget = displayFunction(guiData._data:GetData(), guiData._data)
+		local alignmentPos = if(not alignment or alignment:lower() == "center") then 0.5 elseif(alignment:lower() == "right") then 1 else 0
+		widget.AnchorPoint = Vector2.new(alignmentPos, widget.AnchorPoint.Y)
+		widget.Position = UDim2.fromScale(alignmentPos, widget.Position.Y.Scale)
 
 		widget.Name = "TreeNodeWidget"
 		widget.Parent = container
@@ -236,8 +268,6 @@ local function buildGuiTree<T>(tree : TreeNodeClass.TreeNode<T>, verticalMargin 
 			parentGuiNode:AddChild(guiTreeNode)
 		end
 	end)
-
-
 	if(treeToGuiTreeMap[tree] == nil) then
 		error("guiTree is nil - This is not supposed to happen.")
 	end
@@ -278,8 +308,10 @@ local function graphTree<T>(self : TreeGrapher<T>, treeHeight : number, treeHeig
 		error("TreeGrapher: _guiTree has not been constructed. Did you forget to call buildGuiTree(...)?")
 	end
 	self._guiTree:LevelOrderTraverse(function(currentNode, currentLevel)
-		createTreeNodeGui(currentNode, self._displayFunction, currentLevel, treeHeight, treeHeightWithMargin, self._canvas)
+		createTreeNodeGui(currentNode, self._displayFunction, currentLevel, treeHeight, treeHeightWithMargin, self._alignment, self._canvas)
 	end)
+	
+	
 	self._guiTree:PostOrderTraverse(function(node)
 		if(node:GetData()._isEmpty) then
 			return
@@ -287,26 +319,30 @@ local function graphTree<T>(self : TreeGrapher<T>, treeHeight : number, treeHeig
 
 		local parentNode = node:GetParent()
 		if(parentNode) then
+			local alignment = self._alignment
+			local alignmentPos = if(not alignment or alignment:lower() == "center") then 0.5 elseif(alignment:lower() == "right") then 1 else 0
+			
 			local widget = node:GetData()._guiObject
+			
+			
 			local parentContainer = parentNode:GetData()._guiObject
 			local pos1 = Path2DControlPoint.new(UDim2.new(
-				widget.Position.X.Scale + widget.Size.X.Scale / 2,
+				widget.Position.X.Scale + widget.Size.X.Scale * alignmentPos,
 				0,
 				widget.Position.Y.Scale,
-				0
+				1
 				)
 			)
 			local pos2 = Path2DControlPoint.new(UDim2.new(
-				parentContainer.Position.X.Scale + parentContainer.Size.X.Scale / 2,
+				parentContainer.Position.X.Scale + parentContainer.Size.X.Scale * alignmentPos,
 				0,
 				parentContainer.Position.Y.Scale + parentContainer.Size.Y.Scale,
-				0
+				1
 				)
 			)
-			connectWithPath(pos1, pos2, self._lineSettings, parentContainer.Name .. "_To_" .. widget.Name, self._linesFrame)
+			connectWithPath(pos1, pos2, self._edgeSettings, parentContainer.Name .. "_To_" .. widget.Name, self._linesFrame)
 		end
 	end)
-
 end
 --[[
 Attempts to draw <em>this</em> TreeGrapher's tree given a <strong>verticalMargin</strong>. </br >
@@ -317,11 +353,12 @@ local function drawUnsafe<T>(self : TreeGrapher<T>, verticalMargin)
 	self._guiTree = guiTree
 	graphTree(self, treeHeight, treeHeightWithMargin)
 end
+
 --[[
 Draws <em>this</em> TreeGrapher's contained tree, given a <strong>verticalMargin</strong>. <br>
 Throws an error and clears the canvas if failed.
 ]]
-function TreeGrapher.Draw<T>(self : TreeGrapher<T>, verticalMargin : number)
+function TreeGrapher.Draw<T>(self : TreeGrapher<T>, verticalMargin : number, alignment : AlignmentType)
 	if not self._canvas then
 		error("TreeGrapher.Draw called before Mounting to a Frame.")
 	end
@@ -330,7 +367,27 @@ function TreeGrapher.Draw<T>(self : TreeGrapher<T>, verticalMargin : number)
 	end
 
 	local success, err = pcall(function()
-		drawUnsafe(self, verticalMargin or 0.4)
+		local margin = verticalMargin or DEFAULT_MARGIN
+		self._verticalMargin = margin
+		self._alignment = alignment or DEFAULT_ALIGNMENT
+		drawUnsafe(self, margin)
+		if(self._alignment ~= DEFAULT_ALIGNMENT) then
+			local linesFrame = self._linesFrame
+			local guiTree = self._guiTree
+			local rootWidget = guiTree:GetData()._guiObject.TreeNodeWidget 
+			local lines : {Path2D} = linesFrame:GetChildren()
+			local function updateOffset()
+				local sign = if(self._alignment:lower() == "right") then -1 else 1
+				linesFrame.Position = UDim2.new(
+					0.5,
+					sign * rootWidget.AbsoluteSize.X/2,
+					0.5,
+					0
+				)
+			end
+			updateOffset()
+			rootWidget:GetPropertyChangedSignal("AbsoluteSize"):Connect(updateOffset)
+		end
 	end)
 	if(not success) then
 		self:Clear()
@@ -359,23 +416,23 @@ function TreeGrapher.Clear<T>(self : TreeGrapher<T>)
 		self._linesFrame:Destroy()
 		self._linesFrame = nil
 	end
+	self._verticalMargin = DEFAULT_MARGIN
 end
 --[[
 Redraws <em>this</em>'s tree on the canvas. (Clears the canvas and draws again). <br>
 This is useful if you have a tree that is modified during runtime. <br>
 ]]
 function TreeGrapher.Redraw<T>(self : TreeGrapher<T>)
-	self:Clear()
-	self:Draw()
+	self:MountAndDraw(self._canvas, self._verticalMargin, self._alignment)
 end
 --[[
 Mounts <em>this</em> TreeGrapher on <strong>parentContainer</strong>, 
 and then draws <em>this</em> TreeGrapher's tree given <strong>verticalMargin</strong> <br>
 ]]
-function TreeGrapher.MountAndDraw<T>(self : TreeGrapher<T>, parentContainer : GuiObject?, verticalMargin : number)
+function TreeGrapher.MountAndDraw<T>(self : TreeGrapher<T>, parentContainer : GuiObject?, verticalMargin : number, alignment : AlignmentType)
 	self:Clear()
 	self:Mount(parentContainer)
-	self:Draw(verticalMargin)
+	self:Draw(verticalMargin, alignment)
 end
 --[[
 Replaces the tree to be displayed by <em>this</em> TreeGrapher with <strong>newTree</strong>, and then redraws.
@@ -385,10 +442,22 @@ function TreeGrapher.ReplaceTree<T>(self : TreeGrapher<T>, newTree : TreeNodeCla
 	self._tree = newTree
 	self:Redraw()
 end
+function TreeGrapher.SetEdgeSettings<T>(self : TreeGrapher<T>, edgeSettings : EdgeSettings)
+	self._edgeSettings = table.clone(edgeSettings)
+	self:Redraw()
+end
+function TreeGrapher.SetAlignment<T>(self : TreeGrapher<T>, alignment : AlignmentType)
+	self._alignment = if(not alignment) then DEFAULT_ALIGNMENT else alignment
+	self:Redraw()
+end
+function TreeGrapher.SetVerticalMargin<T>(self : TreeGrapher<T>, verticalMargin)
+	self._verticalMargin = verticalMargin
+	self:Redraw()
+end
 --[[
 Makes the entire tree graph visible if <strong>active</strong> is true, invisible otherwise.
 ]]
-function TreeGrapher.SetVisiblity<T>(self : TreeGrapher<T>, active : boolean)
+function TreeGrapher.SetGraphVisibility<T>(self : TreeGrapher<T>, active : boolean)
 	if(not self._guiTree or not self._linesFrame) then
 		error("TreeGrapher: Attempt to hide guiTree that doesn't exist. Did you call .Draw(...)?")
 	end
@@ -400,15 +469,15 @@ end
 --[[
 Hides the graph of <em>this</em> TreeGrapher, without clearing it.
 ]]
-function TreeGrapher.Hide<T>(self : TreeGrapher<T>)
-	self:SetVisiblity(false)
+function TreeGrapher.HideGraph<T>(self : TreeGrapher<T>)
+	self:SetGraphVisibility(false)
 end
 --[[
 Shows the graph of <em>this</em> TreeGrapher, without clearing it. <br>
 (Make sure that .Draw(...) was called before using this)
 ]]
-function TreeGrapher.Show<T>(self : TreeGrapher<T>)
-	self:SetVisiblity(true)
+function TreeGrapher.ShowGraph<T>(self : TreeGrapher<T>)
+	self:SetGraphVisibility(true)
 end
 
 return if(table.isfrozen(TreeGrapher)) then TreeGrapher else table.freeze(TreeGrapher)
