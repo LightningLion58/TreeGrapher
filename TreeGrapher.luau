@@ -6,7 +6,7 @@ TreeGrapher.__index = TreeGrapher
 
 local DEFAULT_MARGIN = 0.4
 local DEFAULT_ALIGNMENT = "Center"
-export type GuiTreeData<T> = {
+type GuiTreeData<T> = {
 	_guiObject : GuiObject;
 	_height : number;
 	_width : number;
