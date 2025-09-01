@@ -63,7 +63,8 @@ grapher:ShowGraph()
 --[[
 Makes the graph visible or invisible, depending on the paramter (boolean)
 ]]
-grapher:SetVisiblity(true)
+local visible : boolean = true
+grapher:SetVisiblity(visible)
 
 --[[
 Replaces the current edge settings with the new edge settings, and redraws the graph.
